@@ -4,7 +4,11 @@ import { type Flare, advanceFlares, createFlares, flareEnvelope, starOf } from "
 import { type Cell, type Grid, INK, MAX_SCREEN, MIN_SCREEN, cellBrightness, createGlintClocks, createGrid, glintInks, rasterize } from "../engine/raster";
 import { type Glow, cellRegions, createSky, prepareSkyField, skyField } from "../engine/sky";
 import { createRandom } from "../util/random";
-import { AmbienceManager, CELLS_PER_SECOND, DRAWS_PER_SECOND, drawInterval, flareRandom, glintRandom } from "./ambience";
+import type { AudioOut } from "../access/audio";
+import { type Bar, CHILL, createComposer, nextBar } from "../engine/composition";
+import type { Patch } from "../engine/voice";
+import { midiToFrequency } from "../util/pitch";
+import { AmbienceManager, CELLS_PER_SECOND, DRAWS_PER_SECOND, MUSIC_AHEAD, MUSIC_LEAD, drawInterval, flareRandom, glintRandom, musicRandom } from "./ambience";
 
 // The real E01, with its two costly builders counted, so laziness (MG-2) is checked by what runs, not by time
 vi.mock("../engine/sky", async (importOriginal) => {
@@ -301,5 +305,119 @@ describe("MG-2 still and paused (R-08)", () => {
       expect(draws.length - before).toBeLessThanOrEqual(1);
     }
     expect(draws.length - 1).toBeLessThanOrEqual(DRAWS_PER_SECOND * 2);
+  });
+});
+
+/** A2 stand-in: an audio clock the test moves, and a record of what M01 asks it to do and when. */
+function fakeAudio() {
+  let now = 0;
+  const plays: { patch: Patch; at: number }[] = [];
+  const clicks: { time: number; at: number }[] = [];
+  const starts: number[] = [];
+  const audio: AudioOut = {
+    get now() {
+      return now;
+    },
+    start: (at) => starts.push(at),
+    play: (patch) => plays.push({ patch, at: now }),
+    click: (time) => clicks.push({ time, at: now }),
+  };
+  return { audio, plays, clicks, starts, setNow: (t: number) => (now = t) };
+}
+
+/** The music E04 makes from M01's stream, built here without M01: bars until `seconds`. */
+function bars(seed: number, seconds: number): Bar[] {
+  const rng = musicRandom(seed);
+  let state = createComposer(CHILL, rng);
+  const out: Bar[] = [];
+  while (state.time < seconds) {
+    const next = nextBar(state, rng);
+    out.push(next.bar);
+    state = next.state;
+  }
+  return out;
+}
+
+describe("MG-5 music through M01", () => {
+  it("AU-1: starts MUSIC_LEAD after the audio clock, schedules every note of E04's bars in advance, MUSIC_AHEAD s ahead, once", () => {
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const { audio, plays, clicks, starts, setNow } = fakeAudio();
+      const m = new AmbienceManager(quietDisplay(), seed, MIN_SCREEN, MIN_SCREEN, 1, "paused");
+      setNow(3.2);
+      m.startMusic(audio);
+      m.startMusic(audio); // a second start does nothing
+      expect(starts).toEqual([3.2 + MUSIC_LEAD]);
+      // C01's timer: every 250 ms for 2 minutes
+      for (let t = 3.2; t <= 123.2; t += 0.25) {
+        setNow(t);
+        m.pumpMusic();
+        // Everything that starts before now + MUSIC_AHEAD is already scheduled: the last bar made reaches past it
+        const last = Math.max(...plays.map((p) => p.patch.time));
+        expect(last, `seed ${seed} at ${t}`).toBeGreaterThan(t + MUSIC_AHEAD - 4); // a bar is under 4 s long
+      }
+      // Each note was scheduled before it starts, and no more than a bar beyond MUSIC_AHEAD
+      for (const { patch, at } of plays) {
+        expect(patch.time).toBeGreaterThanOrEqual(at - 0.008); // the RH-4 offset may move a note 8 ms earlier
+        expect(patch.time - at).toBeLessThanOrEqual(MUSIC_AHEAD + 4);
+      }
+      // The scheduled notes are exactly E04's notes from M01's stream, moved to the music's start
+      const start = 3.2 + MUSIC_LEAD;
+      const expected = bars(seed, Math.max(...plays.map((p) => p.patch.time)) - start)
+        .flatMap((b) => b.notes)
+        .map((n) => (start + n.time).toFixed(9));
+      const got = plays.map((p) => p.patch.time.toFixed(9));
+      expect(got.slice(0, expected.length)).toEqual(expected);
+      // Vinyl clicks: in time order, each scheduled before it comes
+      clicks.forEach((c, i) => {
+        expect(c.time).toBeGreaterThanOrEqual(c.at);
+        if (i > 0) expect(c.time).toBeGreaterThan(clicks[i - 1]!.time);
+      });
+      expect(clicks.length).toBeGreaterThan(5);
+    }
+  });
+
+  it("R-12 (#8): over 15 minutes live, each flare gives exactly one chime, in the key in force on the audio clock", () => {
+    for (const seed of [1, 2, 3]) {
+      const { audio, plays, setNow } = fakeAudio();
+      const m = new AmbienceManager(quietDisplay(), seed, MIN_SCREEN, MIN_SCREEN, 1, "live");
+      const flares: number[] = [];
+      m.onFlare(() => flares.push(m.time));
+      m.startMusic(audio);
+      let ms = 0;
+      for (let i = 1; i <= 15 * 60 * 60; i++) {
+        ms += 1000 / 60;
+        m.frame(ms);
+        // The audio clock follows the sky clock here; C01's timer pumps every 250 ms
+        setNow(m.time);
+        if (i % 15 === 0) m.pumpMusic();
+      }
+      const chimes = plays.filter((p) => p.patch.layer === "chime");
+      expect(flares.length, `seed ${seed}`).toBeGreaterThanOrEqual(2);
+      expect(chimes).toHaveLength(flares.length);
+      const music = bars(seed, 15 * 60 + 10);
+      chimes.forEach(({ patch }, k) => {
+        // The bar in force at the chime's nominal time (MUSIC_LEAD after the music's 0, plus CHIME_DELAY)
+        const at = flares[k]! + 0.05 - MUSIC_LEAD;
+        const bar = [...music].reverse().find((b) => b.start <= at)!;
+        const tonic = 72 + bar.key.tonic;
+        expect([midiToFrequency(tonic + 7), midiToFrequency(tonic + 14)], `seed ${seed} chime ${k}`).toContain(patch.frequency);
+      });
+    }
+  });
+
+  it("no chime before the music starts", () => {
+    const { audio, plays, setNow } = fakeAudio();
+    const m = new AmbienceManager(quietDisplay(), 1, MIN_SCREEN, MIN_SCREEN, 1, "live");
+    let flares = 0;
+    m.onFlare(() => flares++);
+    let ms = 0;
+    for (let i = 1; i <= 6 * 60 * 60; i++) {
+      ms += 1000 / 60;
+      m.frame(ms);
+    }
+    expect(flares).toBeGreaterThan(0);
+    setNow(m.time);
+    m.startMusic(audio);
+    expect(plays.filter((p) => p.patch.layer === "chime")).toHaveLength(0);
   });
 });

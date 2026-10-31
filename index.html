@@ -18,10 +18,32 @@
         width: 100vw;
         height: 100vh;
       }
+      #music {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        width: 44px;
+        height: 44px;
+        border: 1px solid rgba(0, 0, 0, 0.15);
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.85);
+        color: rgb(40, 40, 40);
+        font: 20px/1 ui-monospace, Menlo, Consolas, monospace;
+        cursor: pointer;
+      }
+      #music[aria-pressed="true"] {
+        background: rgb(40, 40, 40);
+        color: #fff;
+      }
+      #music:focus-visible {
+        outline: 2px solid rgb(84, 124, 204);
+        outline-offset: 2px;
+      }
     </style>
   </head>
   <body>
     <canvas id="sky" aria-label="An ASCII drawing of a spiral galaxy" role="img"></canvas>
+    <button id="music" type="button" aria-label="Play music" aria-pressed="false">♪</button>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
