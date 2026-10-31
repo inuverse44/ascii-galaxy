@@ -2,6 +2,7 @@
 // It feeds animation frame times to M01 and sets the mode: still under prefers-reduced-motion, paused while the
 // canvas is off screen or the page is hidden, live otherwise (R-08).
 
+import { AudioAccess } from "./access/audio";
 import { DisplayAccess } from "./access/display";
 import { MAX_SCREEN, MIN_SCREEN } from "./engine/raster";
 import { AmbienceManager } from "./manager/ambience";
@@ -38,6 +39,33 @@ const loop = (now: number) => {
   requestAnimationFrame(loop);
 };
 requestAnimationFrame(loop);
+
+// AU-2 (R-11): "♪" is the only control. No AudioContext exists before the first press; it is created then, and
+// later presses suspend and resume it. AU-1: a timer (not the animation frame, which stops in a hidden tab) asks
+// M01 to make bars ahead every 250 ms.
+const button = document.querySelector<HTMLButtonElement>("#music");
+if (!button) throw new Error("missing #music button");
+let context: AudioContext | null = null;
+const show = (playing: boolean) => {
+  button.setAttribute("aria-pressed", String(playing));
+  button.setAttribute("aria-label", playing ? "Pause music" : "Play music");
+};
+show(false);
+button.addEventListener("click", async () => {
+  if (!context) {
+    context = new AudioContext();
+    manager.startMusic(new AudioAccess(context));
+    setInterval(() => manager.pumpMusic(), 250);
+    await context.resume();
+    show(true);
+  } else if (context.state === "running") {
+    await context.suspend();
+    show(false);
+  } else {
+    await context.resume();
+    show(true);
+  }
+});
 
 let pending = 0;
 window.addEventListener("resize", () => {

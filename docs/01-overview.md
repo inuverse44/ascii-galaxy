@@ -116,9 +116,9 @@ Rule IDs and checks are in [02-detailed-design.md](02-detailed-design.md), "Veri
 | R-07 | E02 (RS-1) | RS-1 unit test; screenshots at 1440 px and 390 px |
 | R-08 | C01, U01 (UC-04) | Browser test: reduced motion and off-screen |
 | R-10 | E04 (H, V, RH, M, F rules), E05 (T rules), A02 (MC rules), M01 (bar scheduling) | Music, timbre, and master-chain unit tests; R-10 long-run test; listening |
-| R-11 | C01, A02 (UC-02) | Browser test: before and after the button; only one interactive element |
-| R-12 | E03 (EV-3) → M01 (MG-4) → E04 (F-3) (UC-03) | EV-3, MG-4 (each flare reaches the listener once), and F-3 unit tests |
-| R-13 | E05 (L-1), A02 (L-2–L-4) | L-1 unit test; forced and natural renders |
+| R-11 | C01, A02 (UC-02; AU-1, AU-2) | Browser tests: before and after the button, suspend and resume; only one interactive element |
+| R-12 | E03 (EV-3) → M01 (MG-4, MG-5) → E04 (F-3) → E05 → A02 (UC-03) | EV-3, MG-4 (each flare reaches the listener once), F-3, and MG-5 (each flare gives exactly one chime, in the key in force) unit tests |
+| R-13 | E05 (L-1), A02 (L-2–L-4) | L-1 unit test; the fade-in probe; forced and natural renders |
 | R-21 | Outside the runtime layers: `.github/workflows/`, `.github/dependabot.yml` | CI step "Check workflows" (`scripts/check-workflows.mjs`) on pushes to main, PRs, and manual runs. It reads the workflows with a YAML parser (a file that does not parse fails): every external `uses:` that GitHub runs (a job's or a step's, and the steps of the local actions they call) pinned to a 40-hex SHA (Docker images to a digest), while a `uses` key elsewhere (an env variable, an input) is data; workflow-wide permissions `contents: read` only; no `pull_request_target` in any form of `on:`. Its tests break each rule in each YAML form (flow mappings, quoted keys, lists), and pass equivalent forms of a passing workflow. Dependabot's configuration covers npm and Actions |
 
 ## 8. Open questions
