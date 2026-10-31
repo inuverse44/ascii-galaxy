@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="A slowly turning ASCII galaxy on white paper." />
+    <title>ascii galaxy</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #fff;
+        overflow: hidden;
+      }
+      #sky {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="sky" aria-label="An ASCII drawing of a spiral galaxy" role="img"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,214 @@
+# 02 Detailed design
+
+Component IDs are from [01-overview.md](01-overview.md). Each rule has an ID; the Verification section assigns a check to every ID.
+
+## E01 SkyEngine
+- SK-1 Brightness field: brightness = core (exponential fall-off with radius) + disc × arm strength.
+- SK-2 Arms: a logarithmic-spiral pattern that turns rigidly. One full turn takes 600 s ± 5% (R-03 "about 10 minutes"). Because it turns rigidly, the arm layer at time t + Δ equals the arm layer at t rotated by the pattern angle for Δ (R-03 "the arms keep their shape").
+- SK-3 On top of the arms, particle noise flows at an angular speed that decreases with radius (R-03 "the center turns faster than the outside"). Turning the arms themselves differentially would wind them up until they disappear, so the two are kept as separate layers.
+- SK-4 Tilt and placement: the galaxy plane is tilted slightly and projected, so it looks elliptical with a minor/major axis ratio in [0.6, 0.85] (on screen, after correcting for the cell aspect); the center sits on a rule-of-thirds line; the diameter is 50–60% of the screen width (R-01). The diameter is that of the disc (where the galaxy's brightness is above 0). The faint disc between the arms draws no glyph, which keeps the arms apart on white paper, so the galaxy as drawn is smaller than the disc and its outline changes as the arms turn: its widest extent stays at least 0.65 of the disc's diameter (the lowest measured over seeds 11–100 at 8 times across a turn was 0.69). The user chose this over filling the disc with dots, which kept the drawn size at 50–60% but blurred the spiral. On screens so wide that this would not fit, the galaxy is reduced until its height is at most 92% of the screen height.
+- SK-5 Distant galaxies: 3–5 smudges of 3–8 cells each. Stars: 30–60 points (R-02).
+- SK-6 Each star twinkles with its own period, 5 + 3 × u s, and its own phase, 2π × u′, for uniform u, u′ in [0, 1) from U02 (R-04).
+- SK-7 A flare from E03 adds a brightness bump to its star, following the flare's envelope (R-05): at envelope level e, the star gains e × 1.2 × exp(−d / 0.6), where d is the squared distance from the star in cell units, out to d < 4 (the sum is clamped to 1, C-2). At the peak the star's cell draws the densest glyph and a faint glow shows in the cells beside it; outside flares nothing is added.
+- SK-8 Regions for colour (RS-4): a point whose plane radius is below 0.2 is in the core, the rest of the disc (radius below 1) is in the arms, and everything else is in no region. A cell's region is the region of its center. The regions do not change with time.
+
+## E02 RasterEngine
+- RS-1 Grid: cell width = round(screen width ÷ 124), clamped to 8–13 px. Cell height = round(width × 1.45). Grid lines are a very faint grey. Screen width and height must each be in [200, 4096] px; anything else (NaN and infinities included) is rejected with a reason, and C01 clamps the window size into the range. The sizes are CSS pixels, so 4096 covers a 4K screen at 1× and an 8K screen at 2×; at 8192 × 8192 a frame cost far more than a calm page should use (see MG-3).
+- RS-2 Each cell samples brightness at 8 fixed points (a constant table of offsets inside the cell, exported for tests) and averages them (for smooth edges).
+- RS-3 For a cell brightness b in [0, 1]: the glyph is ramp[min(10, floor(11 × b))] from the 11-glyph ramp `` .:;t%SX8#@`` (index 0 is a space), so brighter means a later, denser glyph; the background is a grey with lightness 1 − 0.25 × b (white paper at b = 0, a light grey at b = 1).
+- RS-4 Colour glints: each cell has its own staggered clock with a re-roll interval of 2 + u s and an offset of u′ × interval, for uniform u, u′ in [0, 1) drawn per cell from U02 (a stream of its own, separate from the sky's). The cell's roll in its epoch k = floor((t + offset) / interval) is a hash of the cell, k, and a seed, in [0, 1), so each cell re-rolls at its own boundaries and its selection is drawn afresh each time. A galaxy cell (in the core or the arms by SK-8, with brightness > 0.1) whose roll is below 0.035 shows a faint colour: amber in the core; blue or pink in the arms (by a second hash). The colour is the glyph's ink; the background stays grey. Each cell decides on its own, so its ink changes only at its own clock's boundaries (every 2–3 s) or when it starts or stops being a galaxy cell (R-06 "a little", "every 2–3 seconds"). On average about 3.5% of the galaxy's cells show a colour (2–5%). There is no ceiling at a single moment: the count is binomial, and the galaxy has few cells brighter than 0.1 (measured over seeds 1–5 at 100 times: 807–884 at 1440 × 900, 125–158 at 390 × 844), so on a phone it reaches about 10% now and then. A ceiling would need cells to change when others re-roll (or a state kept between frames); the user chose the cells' own timing over a ceiling (review of #13).
+
+## E03 EventEngine
+- EV-1 Flare intervals are drawn uniformly from [120, 300] s using U02: interval = 120 + 180 × u for a uniform u in [0, 1) (R-05 "every few minutes"). The first flare starts one interval after time 0. Each flare also draws a pick in [0, 1); its star is floor(pick × number of stars) of the sky in force when it is drawn, so a resize that changes the stars keeps the schedule.
+- EV-2 A flare lasts 20 s ± 2 s: it rises for 8 s and fades for 12 s (R-05 "about 20 seconds"). The envelope is 0 before the start, rises smoothly (smoothstep) from 0 to 1 over 8 s, falls smoothly back to 0 over the next 12 s, and is 0 from 20 s on.
+- EV-3 The event is emitted once, at its start, so M01 can trigger the chime (R-12): advancing E03 from time t₀ to t₁ returns, in order, exactly the flares whose start is in (t₀, t₁].
+
+## E04 CompositionEngine: what "chill" means
+Chill is treated as sound that asks no tension of the listener. It is built from three things: low tension, comfortable predictability, and a little wobble. Each is made by the rules below. All functions are pure: (state, random source) → notes. A style is data (VOL-04): its templates and their weights, the F-1 form, the electric piano's comping patterns, and the velocities. The other rules below are E04's code, the same for every style: a style that changes them (straight rhythm, another melody range) is a change to E04.
+
+### Data
+- Keys: a tonic pitch class (0–11, C = 0) and a mode, major or minor. A minor key uses the templates of its relative major (A minor plays the C templates); its tonic is still the minor tonic (A), which H-2, M-1, and F-3 use.
+- Chord qualities and their intervals above the root (U03): maj7 0 4 7 11; maj9 0 4 7 11 14; m7 0 3 7 10; m9 0 3 7 10 14; 7 0 4 7 10; 9 0 4 7 10 14; 13 0 4 7 10 14 21; 7♭9 0 4 7 10 13; 7sus4 0 5 7 10; 9sus4 0 5 7 10 14; 13sus4 0 5 7 10 14 21.
+- A note has a layer (pad, epiano, bass, drums, melody, chime), a MIDI number (drums: a kind, kick, snare, or hat, instead), its bar and 16th step, its nominal start in seconds from the start of the music (before the RH-4 offset), its start (after the offset), its length in seconds, and a velocity in [0, 1] (after the RH-4 factor).
+- The generator produces one bar at a time: its index, start time, tempo, key, chords (each with its start step, its length in steps, its upper voicing, and its bass), the layers playing, and the notes.
+
+### Harmony: never fully resolve
+- H-1 Chords have four or more notes (maj7, m7, 9, 11, 13). No plain triads.
+- H-2 The dominant of the current key never resolves to its tonic: no V7 → I (in C: no G7, G9, or G13 → C, Cmaj7, Cmaj9). A dominant is a chord rooted a fifth above the tonic (tonic + 7) with quality 7, 9, 13, or 7♭9; a tonic chord is any chord rooted on the tonic; in a minor key this is V7 → i (in A minor: no E7 → Am7). The sus4 forms: 7 and 7♭9 → 7sus4, 9 → 9sus4, 13 → 13sus4. Return home softly instead: the dominant as sus4 (G13sus4 → Cmaj9), ♭VII7 → I, or IVm7 → I. Secondary dominants that resolve to other chords are part of the style and are allowed (in C: E7 → Am7, A7(♭9) → Dm9, C7 → Fmaj7).
+- H-3 H-2 holds on the generated chord sequence: also across the boundary between two progressions and across key changes, where "current key" means the key in force at the second chord. The generator decides each chord one chord ahead: before emitting a chord, it checks it against the next chord (and the key in force there); if the pair would be V7 → I, it emits the sus4 form of that dominant instead.
+- H-4 A progression is a 4-bar template, one cell per bar (`|` separates bars). Templates are chosen by weight (Markov chain) from these candidates, written in C:
+  - IVmaj7 → III7 → VIm7 → Vm7 I7: | Fmaj7 | E7 | Am7 | Gm7 C7 | (the last bar holds two chords, two beats each)
+  - A swaying ii–V–I: | Dm9 | G13sus4 | Cmaj9 | A7(♭9) |
+  - Descending: | Fmaj9 | Em7 | Dm9 | Cmaj7 |
+  - Two-chord vamp (Dorian): | Dm9 | G9 | Dm9 | G9 |
+  Each generated progression starts on a bar that is a multiple of 4 (counting from 0) and equals one template transposed to the current key, except where H-3 replaced a dominant by its sus4 form. The first template is drawn by the weights 3, 3, 2, 2 (in the order above); each next one by the same weights with the previous template's weight halved, so a template seldom repeats at once.
+- H-5 Key changes happen at progression starts, 32–64 bars apart (both ends included), to the relative key, a minor third up, or the parallel key. The gap is 32 + 4 × floor(9 × u) bars for a uniform u in [0, 1) from U02, counted from bar 0 for the first change. The target is drawn with equal weights: for a uniform u, floor(3u) picks the relative key, a minor third up, or the parallel key, in that order. The music starts in a key drawn uniformly from the 12 major and 12 minor keys: the tonic floor(12u) and major if a second draw u′ < 0.5. The composer's first four draws are the tonic, the mode, the tempo (RH-1), and the first gap; at a change, the first three draws for the new progression are the target, the tempo, and the next gap.
+
+### Voicing: keep it close
+- V-1 Upper voices are rootless. Each upper voice's pitch class is one of the chord's allowed tones: the 3rd (the 4th on a sus4 chord), the 7th, the 9th (♭9 where the chord name says so), the 5th, or the 13th. The 3rd (or 4th) and the 7th are always present; the root's pitch class never is. There are four upper voices: the 3rd (or 4th), the 7th, and two different ones of the 9th, the 5th, and the 13th, at four different pitches.
+- V-2 Upper voices stay within C3–C5 (MIDI 48–72).
+- V-3 Moving to the next chord, the chosen voicing has the smallest total voice movement (the sum of |a − b| over the voices, both sorted from low to high) among all voicings that satisfy V-1 and V-2. Ties go to the voicing with the lower sum of pitches, then to the lower pitches from the bottom up. The first chord moves from the reference voicing 55 59 62 65.
+- V-4 Bass plays only the root or the fifth, 12–24 semitones below the lowest upper voice, and each bass note lasts at most one beat: the root at the chord's start for 3 steps, and in a chord longer than 8 steps, the fifth 8 steps after the start for 3 steps.
+
+### Rhythm: lean back
+- RH-1 Tempo is chosen at the start and at each key change: BPM = 72 + 12 × u for a uniform u in [0, 1) from U02.
+- RH-2 16th-note swing at 58%: every off-beat 16th starts at 58% of its 8th-note span.
+- RH-3 Half-time feel: kick on beat 1 (step 0) and the "and" of 3 (step 10); snare on beat 3 (step 8), played 15 ms late. Hats play on the 8ths (even steps), each kept with probability 0.75 (if its draw u < 0.75).
+- RH-4 Timing offset = −8 + 16 × u ms and velocity factor = 0.85 + 0.30 × u′, for uniform u, u′ in [0, 1) from U02, drawn per note (the wobble is part of the chill sound): two draws of its own for each note, u first. The chime (F-3) is a note too and takes the wobble.
+- RH-5 Chords are strummed from the lowest note up, 12 ms apart (in nominal time); the strum delays each voice's start, not its end, so all voices of an onset end together at the onset's end. The pad holds each chord for its whole length. The electric piano plays the chord at the onsets of a comping pattern drawn per bar from a list of patterns (each onset lasts until the next or the chord's end, at most 6 steps).
+
+### Melody: sparse and repeated
+- M-1 Scale: the key's pentatonic plus the 9th and 13th as colour notes. Major: 0 2 4 7 9 above the tonic (the 9th and 13th are already in it); minor: 0 3 5 7 10 plus 2 and 9.
+- M-2 Range: within 18 semitones (1.5 octaves) over each 8-bar phrase: every melody note is in MIDI 65–83.
+- M-3 A 2-bar motif is made at the start of each 8-bar phrase: 4–7 onsets on distinct 16th steps, each 1 or 2 steps long, with a pitch that walks by at most 2 scale steps from the one before. The other three 2-bar blocks of the phrase keep its onset steps and lengths, with pitches bent to fit their chords and the key in force: the nearest allowed pitch in the range (M-1, M-4), the lower one on a tie.
+- M-4 More than half of the 16th steps are rests (counted per phrase: a step is a rest when no melody note sounds in it; a motif holds at most 14 of its 32 steps). Notes on beats 1 and 3 (steps 0 and 8) are chord tones that are also in the scale; other notes may be passing notes within M-1.
+
+### Form: no big peaks
+- F-1 Layers change only at 8-bar phrase boundaries, one layer at a time, following this list of phrases (P = pad, E = electric piano, B = bass, D = drums, M = melody). Phrases 1–2 are the intro; phrases 3–10 then repeat in order (10 → 3 adds B).
+  1 P · 2 P E · 3 P E B · 4 P E B D · 5 P E B D M · 6 P E B M · 7 P E B D M · 8 P E B M · 9 P E M · 10 P E
+- F-2 Drums do not play all the time: no more than 4 consecutive 8-bar phrases with drums.
+- F-3 Chime (R-12): exactly one note per flare, either the 5th (tonic + 7 semitones) or the 9th (tonic + 14 semitones), where the tonic is the current key's tonic in octave 5 (MIDI 72–83). The choice is a uniform draw, followed by the RH-4 wobble's two draws; the key is the one in force at the chime's time.
+- R-10 (no repeats) is met by the drawn templates, comping patterns, hats, and motifs: a repeat is not impossible, only unlikely, and the check runs fixed seeds. "A 16-bar window of notes" compares, for 16 consecutive bars, each note's layer, MIDI number (or drum kind), bar offset within the window, and step, without timing offsets or velocities.
+
+## E05 VoiceEngine
+Patches are data (oscillators, ratios, envelopes, filter settings); A02 builds the Web Audio graph from them. The master chain is also data (a list of stages with parameters) that A02 builds once.
+
+### Timbre
+- T-1 Electric piano: two FM pairs on the note frequency. Body: carrier and modulator at ratio 1:1. Tine: modulator at ratio 14:1 whose modulation decays to 10% within 0.3 s.
+- T-2 Bass: a sine at the note frequency plus its second harmonic at a gain of 0.1–0.3.
+- T-3 Pad: two sawtooth oscillators detuned by ±3 to ±10 cents, through a low-pass filter with cutoff ≤ 2 kHz; attack ≥ 0.5 s.
+- T-4 Drums: kick is a sine whose pitch falls from ≥ 100 Hz to ≤ 60 Hz within 100 ms; snare is noise through a band-pass filter (center 1–3 kHz); hat is noise through a high-pass filter (cutoff ≥ 5 kHz) at a gain at least 12 dB below the snare.
+- T-5 Chime: FM with a non-integer carrier/modulator ratio (not within 0.05 of an integer).
+
+### Master chain
+- MC-1 Order: low-pass → saturation → tape wobble → reverb → output; vinyl noise is mixed in after the reverb.
+- MC-2 Low-pass cutoff 2.5 kHz ± 10%.
+- MC-3 Saturation: a tanh-shaped curve with drive ≤ 2 (gentle).
+- MC-4 Tape wobble: a pitch LFO at 0.3 Hz ± 0.05 with depth 6 cents ± 1.
+- MC-5 Vinyl noise: band-limited noise (200 Hz–4 kHz) at ≤ −45 dBFS, plus clicks at 0.1–0.5 per second on average.
+- MC-6 Reverb: convolution with an impulse response of decaying noise whose level falls by 60 dB in 2.5 s ± 0.2.
+
+### Loudness limits (R-13)
+These numbers are the limits R-13 refers to. They may be tuned in build step 4 only by a PR that changes this section.
+- L-1 Every patch envelope has an attack of at least 5 ms (drums included) and a release of at least 30 ms.
+- L-2 The master output fades in over 4 s after "♪" is pressed.
+- L-3 Measured on the rendered output in 100 ms windows: peak ≤ −6 dBFS in every window; spectral centroid ≤ 3 kHz in every window and ≤ 2 kHz over the whole render.
+- L-4 Momentary loudness (400 ms windows, 100 ms hop) never rises by more than 10 dB from one window to the next, after the fade-in.
+
+## M01 AmbienceManager
+- MG-1 Live mode: M01 advances sky time by U01's fixed steps and draws at most 12 times per second of sky time, and at most 200,000 cells per second: the interval between draws is the larger of 1/12 s and (cells ÷ 200,000) s. Up to 2560 × 1440 that is 12 draws a second; at 4096 × 4096 (68,256 cells) about 3. The fastest visible motion is slow (the arm tips move about 4.5 px/s at 1440 px, 13 px/s at 4096 px), so each draw moves less than half a cell, and the page stays light.
+- MG-2 Still mode (prefers-reduced-motion) draws once, at the current time, and then nothing. Paused (canvas off screen or page hidden) draws nothing and time does not pass; back to live, time continues from where it stopped (no catching up). A resize redraws at once in still mode; in live mode the next draw MG-1 allows is at the new size (resizing never adds draws); paused draws nothing. A resize only computes the grid, and so does starting: the sky, the prepared field (MG-3), and the canvas size are built just before the next draw, so resizes while paused cost nothing and the canvas (which resizing clears) is not left blank.
+- MG-3 Each frame M01 takes E02's sample points (prepared once per screen size) to E01, which prepares what does not change with time at those points once and computes only the rest per frame; E02 turns the values into cells. The cells are the same as rasterizing E01's point-by-point field. Only the points inside the disc keep the galaxy's terms, in typed arrays; a star is looked up from the 5 × 5 cells around a point (a star reaches less than one cell, and its flare less than two, SK-7). Measured once in Node at build step 2b (seed 1, alone, the mean of 5 frames): at 1440 × 900 a frame's field took 2.2 ms (59.8 ms point by point), the cells 1.2 ms, and preparing 79 ms; at 4096 × 4096 the field took 16.9 ms, the cells 10.1 ms, and preparing 575 ms. Before step 2b, with a 3 × 3 lookup and other tests running, preparing took 41 ms and 0.53 s.
+- MG-4 Colour and flares: M01 prepares the cells' regions (SK-8) and glint clocks (RS-4) with the field, once per screen size, and passes them to E02 at each draw. It keeps E03's state on a random stream of its own (independent of the sky and the glints, and of the screen size), advances it to the sky time on each frame, passes the flares in progress with their envelope levels to E01, and reports each started flare exactly once to a listener (the chime from build step 4). Sky time does not pass when still or paused, so no flare starts then.
+
+## A01 DisplayAccess / A02 AudioAccess
+- A01 draws a cell array onto a Canvas 2D context (background fill, then glyphs grouped by colour).
+- A02 owns the AudioContext (or an OfflineAudioContext in tests), the master chain, and a look-ahead scheduler (about 100 ms ahead).
+
+## U01 Clock / U02 Random / U03 Pitch
+- U01: pure. Turns the frame times that C01 passes in (from requestAnimationFrame) into fixed 1/60 s steps. Modes: live, still (reduced motion), paused (off-screen), fixed (tests). C01 sets the mode from matchMedia and IntersectionObserver; U01 itself uses no browser API.
+- U02: a small seeded PRNG, so tests can reproduce the same sky and the same music.
+- U03: MIDI ↔ frequency, scales, chord spelling, intervals.
+
+## Verification
+Every rule ID above, and C-1–C-4 from 01 §2, has a row. Unless stated otherwise, unit tests run 5 seeds; "30 minutes" means the bars of 30 minutes of music generated by E04 without audio, at fixed time (U01 fixed). "u fixed to 0, 0.5, 0.999" means the test replaces U02 with a stub returning that value and checks the exact result of the formula.
+
+### Core (unit tests)
+| Rule | Check |
+|---|---|
+| C-1 | The cell type holds exactly one glyph (a string of length 1) or none; A01 draws one glyph per cell at most (a canvas spy counts fillText calls per cell) |
+| C-2 | E01 values over 100 random times (at every other one, every star at the peak of a flare, checked at each star and at the centers of the four cells beside it, left, right, above, and below) are all finite and in [0, 1], at screens on every corner of the RS-1 range (200 and 4096 in each dimension) as well as 390 × 844 and 1440 × 900; E02 maps −0.5 to the same cell as 0, 1.5 to the same cell as 1, and NaN to the same cell as 0 |
+| C-3 | U03: MIDI 69 → 440 Hz, 60 → 261.63 Hz (± 0.01), 81 → 880 Hz; frequency → MIDI is the inverse |
+| C-4 | A bar has 16 steps; at 72 and 84 BPM one step lasts 60 / BPM / 4 s |
+
+### Sky and events (unit tests at fixed times)
+| Rule | Check |
+|---|---|
+| SK-1 | At t = 0 and 16 times across a turn (one per 37.5 s step, at a seeded offset in the step): the field is 1 at the center; on each of 36 fixed rays, the points with r in [0.05, 0.97) (step 0.01) outside the arms (arm pattern < 0.001) are strictly decreasing in r, and each ray has more than 5 of them; the field is 0 outside the disc (#10). At 2000 random disc points and times (seed 3's galaxy at 1440 × 900), the field equals core + disc × (floor + (1 − floor) × arm pattern × (0.45 + 1.1 × noise)), built from the same arm pattern and noise layer that SK-2 and SK-3 test |
+| SK-2 | The pattern turns 360° in 600 s (within 570–630); at 2000 random points (the arm pattern does not depend on the seed), times, and Δ in [0, 60) s, the arm pattern at t + Δ equals the pattern at t rotated by the angle for Δ (to 1e-9) |
+| SK-3 | Seeds 1–3, at t = 0 and 250 s: the noise layer's angular speed, measured by matching a ring of 720 samples 10 s apart, strictly decreases over r = 0.2, 0.4, 0.6, 0.8 and is positive |
+| SK-4 | At 1440 × 900 and 390 × 844, seeds 1–10, measured on the galaxy alone (no stars or smudges). On the disc (points with b > 0, sampled every 2 px): the center (the middle of its extent) is on a third line (± one cell); its widest extent over 360 directions is 50–60% of the width; its narrowest extent over its widest is in [0.6, 0.85]. On the drawn galaxy (the corners of the cells that draw a glyph) at 120 times across one turn of the pattern (one per 5 s step, at a seeded offset in the step, #10): its widest extent is 0.65–1 of the disc's, and a quarter turn apart (about 150 s) at least 10% of the drawn cells differ. At every corner of the RS-1 range: the center is on screen and the galaxy's height is at most 92% of the screen height |
+| SK-5 | At 1440 × 900, 390 × 844, and every corner of the RS-1 range: counts of distant galaxies (3–5) and stars (30–60). At 1440 × 900 and 390 × 844: each distant galaxy, rasterized alone, draws 3–8 glyphs; each star's own cell, through the RS-2 averaging, draws a glyph at t = 0 and at the lowest point of its twinkle. Seed 1 at 1440 × 900: each star alone at its brightest (amplitude 0.8) draws nothing in the eight cells around its own |
+| SK-6 | The timing formula with u fixed to 0, 0.5, 0.999 gives periods of 5, 6.5, 7.997 s, and with u′ fixed to 0, 0.25, 0.5, 0.999 phases of 0, π/2, π, 2π × 0.999 (#8). With a Random that records its draws, each star's period and phase come from two consecutive draws through that formula, in star order. With real seeds: each star's period measured from its brightness over 60 s (upward crossings of the mean, sampled every 0.01 s) is within 0.02 s of its own; periods cover both halves of [5, 8]; phases cover all four quarters of [0, 2π); no two stars of a sky share both period and phase |
+| SK-7 | Seeds 1–5, every star at 1440 × 900, with the star alone: at levels 0, 0.25, 1 and at the levels of 41 ages through a flare (E03's envelope), the field equals the field without the flare plus level × 1.2 × exp(−d / 0.6), clamped to 1, at the star and at points 0.5, 1, and 1.9 cells away in 8 directions, and equals the field without it at 2.1 and 3 cells; in the real sky at the peak the star's cell draws "@" and at least one of the four cells beside it draws a glyph; every other star at least 2 cells away keeps its brightness; the prepared field with flares gives the same values as the point-by-point field |
+| SK-8 | At 1440 × 900 and 390 × 844, seeds 1–5, on a 4 px lattice: every point with plane radius below 0.2 is core, every other point with radius below 1 is arm, every point at radius 1 or more is none, and both core and arm points exist; each cell's region is the region of its center |
+| RS-1 | Cell widths 8, 8, 12, 13 px and heights 12, 12, 17, 19 px at screen widths 390, 1024, 1440, 2560 px. The cells cover the screen with less than one cell left over, at every corner of the range. 199 px, 4097 px, NaN, and infinity are rejected |
+| RS-2 | The offset table has exactly 8 entries, all inside the cell; a cell's value equals the mean of the field at those 8 points |
+| RS-3 | For each threshold k / 11 (k = 1–10): just below gives ramp[k − 1] and just above gives ramp[k]; b = 0, 0.25, 1 give " ", ":", "@". The background has equal red, green, and blue, with lightness within 0.5 / 255 of 1 − 0.25 × b, at b = 0, 0.05, 0.25, 0.5, 0.95, 1 and every threshold; −0.5 and 1.5 behave as 0 and 1 (C-2) (#8) |
+| RS-4 | With u fixed to 0, 0.5, 0.999: re-roll intervals of 2, 2.5, 2.999 s, and with u′ fixed to 0, 0.5 offsets of 0 and half the interval; a Random that records its draws shows each cell's clock comes from two consecutive draws in cell order (seed 3, 50 cells). Seeds 1–3, 10,000 cells each: intervals cover both halves of [2, 3], and offsets are not shared (at least 99% distinct, so cells do not re-roll together). Seed 4: sampled every 0.05 s over 30 s, each of 200 cells' rolls changes only at its own boundaries and changes at each of them. Seed 5, 20,000 cells over 10 epochs: across a re-roll a cell keeps its selection only about as often as chance allows (the cells selected in one epoch are selected in the next at a rate of at most 0.1). Inks (seed 6, 6,000 cells, 4 times): only galaxy cells are coloured, each exactly when its own roll is below 0.035; cellsFromSamples colours by the same rule (seed 7). Shown ink timing: with constant brightness (60 cells, seeds 1–3, drawn 12 times a second for 60 s), every change of a cell's ink falls on a boundary of its own clock; on the real galaxy (1440 × 900 and 390 × 844, seeds 1–2, the same draws for 30 s through M01's prepared field), every change falls on its own boundary or where the cell starts or stops being a galaxy cell. At 1440 × 900 and 390 × 844, seeds 1–5, at 100 sampled times through M01's prepared regions and clocks: the share of the galaxy's cells (core or arm, brightness > 0.1) that are coloured, averaged over the times, is 2–5%; no other cell is coloured, blue and pink appear only in arm cells and amber only in core cells, and blue, pink, and amber all occur |
+| EV-1 | With u fixed to 0, 0.5, 0.999: intervals of 120, 210, and 299.82 s. With real seeds over 2 hours: every interval in [120, 300] s, and both halves of the range occur; the first flare starts one interval after 0; picks map to star floor(pick × stars) for 30 and 60 stars |
+| EV-2 | Every flare lasts 20 s ± 2 s (8 s rise, 12 s fade): the envelope is 0 at −0.01 s and from 20 s on, 1 at 8 s, strictly rising on (0, 8) and strictly falling on (8, 20), sampled every 0.01 s |
+| EV-3 | Over 2 hours, advanced in steps of 1/60 s, in uneven steps (0.001–40 s), and in one step: each flare is returned exactly once, by the step whose interval holds its start, and the three runs return the same flares |
+
+### Frame workflow (unit tests, frames at 60 Hz through the real A01 with a canvas spy)
+| Rule | Check |
+|---|---|
+| MG-1 | Seed 1, live for 10 s at 400 × 300: sky time ≈ 10 s, and 10–12 draws per second after the first picture. Seed 7: a draw shows the same cells as rasterizing E01's field at the manager's time, with its glints. At the four corners of the RS-1 range, 1440 × 900, and 2560 × 1440, the draw interval equals the larger of 1/12 s and cells ÷ 200,000 s, so cells per second stay within 200,000; it is exactly 1/12 s at all of them but 4096 × 4096, where it allows about 2.93 draws a second. At 4096 × 4096 live for 5 s: more than 0 draws, within the cell budget. How long preparing and drawing take is measured and written in MG-3, not tested: a wall-clock bound fails on a busy machine without any change in the code |
+| MG-2 | Still: exactly one draw over 5 s of frames, time stays 0; live → still draws once more, then nothing; paused for 30 s: no draws, time unchanged, and back to live less than 1.1 s later in sky time after 1 s of frames; starting paused draws nothing until live; resize draws at once only when still, and when live the next 1/12 s holds exactly one draw, at the new size; resizing before every frame for 2 s gives at most 24 draws and never two in one frame; laziness is checked by what runs, with E01's two builders (createSky and prepareSkyField) counted: starting paused at 1440 × 900 and 2 s of frames build no sky, prepare no field, size no canvas, and draw nothing, and the first still draw builds each once and is at that size; resizes to 4096 × 4096, 1440 × 900, and 500 × 400 while paused build nothing and draw nothing, and the next still draw builds each once, at the last size. These checks use seed 1 |
+| MG-3 | At 1440 × 900, 390 × 844, and 200 × 200, seeds 1–2, t = 0, 3.7, 123.4, 599.9, without flares and with flares on the first, a middle, and the last star: every prepared value equals E01's point-by-point value at the same sample point, and the cells equal rasterize's. Two stars in one cell (seed 1's first star, twice) both add their brightness, in both paths |
+| MG-4 | Through M01 with the real A01 (a canvas spy), live at 60 Hz. Seeds 1–2 (each 30-minute run draws about 21,600 times): over 30 minutes at 200 × 200 the listener hears each flare of E03's schedule (from M01's stream) exactly once, on the first frame at or after its start, and the flares are the same with a resize every 7 minutes. Seed 3, at 400 × 300: a draw at the peak of the first flare equals E02's cells, with the glints from M01's regions and clocks, of E01's field with that flare at its level, and differs from the cells without it. Seeds 1–5: still and paused for 10 minutes of frames start no flare and call no listener |
+
+### Music (unit tests over 30 minutes)
+| Rule | Check |
+|---|---|
+| H-1 | Every chord has four or more notes |
+| H-2, H-3 | No pair of consecutive chords is V7 → I in the key in force at the second chord, including at progression boundaries and key changes; a dominant replaced by its sus4 form before a tonic, and pairs across a key change, both occur (so the check is exercised). None of the default templates starts on I, so the boundary case is also checked with a test style of one template, | Imaj7 | VIm7 | IIm7 | V7 |, over 10 minutes: every V7 before the next progression's I is V7sus4, at more than 50 boundaries |
+| H-4 | The bars are split into 4-bar progressions starting at multiples of 4, each in one key and tempo; each equals one template transposed to the current key (the test's own transposition; a minor key uses its relative major's), bar by bar and chord by chord, with the same lengths, allowing only H-3's sus4 replacements; all four templates occur. The weights, with a stub Random: for no previous template and for each previous one, u just above each lower boundary of the cumulative weights (3, 3, 2, 2, the previous one halved), in the middle, and just below each upper boundary picks that template |
+| H-5 | With u fixed to 0, 0.5, 0.999: gaps of 32, 48, and 64 bars. With seeds 1–5: every gap is 32–64 bars (so no stretch longer than 64 bars without a change), each change starts a progression, and each target is the relative key, a minor third up, or the parallel key. With a Random that records its draws (seeds 1–5, 30 minutes each): the first bar's key is the test's own reading of the first two draws (tonic floor(12u), major if u′ < 0.5); a key changes exactly at the bar the gap formula gives from the recorded draw; each target is the test's floor(3u) pick of the recorded draw (more than 20 changes, all three targets picked) |
+| V-1 | Every upper voice's pitch class is one of the chord's allowed tones (3rd or sus 4th, 7th, 9th or written ♭9, 5th, 13th); the 3rd (or 4th) and 7th are present; the root's pitch class is absent. Rejects e.g. a Cmaj7 voicing that contains F♯ or A♭ |
+| V-2 | Every upper voice is in MIDI 48–72 |
+| V-3 | For each chord change (seeds 1–5), the voicing equals the test's own choice: among the voicings satisfying V-1 and V-2 (enumerated), those with the smallest total movement, then the lower sum of pitches, then the lower pitches from the bottom up; ties on movement occur more than 50 times. D7♭9 from the reference voicing, a tie on movement, gives 54 59 60 63 |
+| V-4 | In every bar with bass (seeds 1–5), the bass notes are exactly, in order, each chord's root at its start and, for a chord longer than 8 steps, its fifth 8 steps later, each 3 steps long and 12–24 semitones below the chord's lowest upper voice; bars without the bass layer have none |
+| RH-1 | With u fixed to 0, 0.5, 0.999: 72, 78, and 83.988 BPM. With real seeds: every tempo in [72, 84], set at the start and changed only at key changes. With the H-5 recording Random: the first tempo and each new one are 72 + 12u of the recorded draw |
+| RH-2 | Every off-beat 16th (before jitter) starts at 58% of its 8th-note span |
+| RH-3 | In every bar with drums: a kick on beat 1 and on the "and" of 3, a snare on beat 3 played 15 ms late (before jitter), no kick or snare anywhere else, and hats only on even steps. A hat is kept for draws 0 and 0.75 − 10⁻⁹, not for 0.75 and 0.999; over seeds 1–5 (more than 2000 hat slots), 75% ± 2% of the slots hold a hat |
+| RH-4 | With u fixed to 0, 0.5, 0.999: offsets of −8, 0, 7.984 ms and velocity factors 0.85, 1.0, 1.1497. With real seeds over 30 minutes: split each range into 8 equal bins; every bin holds 12.5% ± 3% of the notes (an alternating ±4 ms pattern fills only 2 bins and fails). Offset and factor are independent (#8): on a joint 4 × 4 grid every cell holds 1/16 ± 2% of the notes, and their correlation is below 0.05 in size. With a Random that records its draws (seed 3, 40 bars), each note's offset and factor come from two consecutive draws of the bar, u first, in note order |
+| RH-5 | Each chord's notes (pad and electric piano) start from the lowest up, 12 ms apart, before jitter. Every voice ends (nominal start + length) at its onset's end: for the pad, the chord's end; for the electric piano, the next onset, the chord's end, or 6 steps, whichever is first (seeds 1–5, more than 1000 notes) |
+| M-1 | Every melody note is in the scale of the current key |
+| M-2 | Every melody note is in MIDI 65–83 (seeds 1–5, more than 100 notes), and every phrase's melody range is ≤ 18 semitones |
+| M-3 | In every phrase with melody, the three later 2-bar blocks have the same onset steps and lengths (in steps) as the first. Every melody note is its motif note (read from the composer's state) bent to the nearest allowed pitch, lower on a tie, by the test's own search; `bend` itself picks the lower on a tie in either order. Motifs drawn for 200 seeds and keys: 4–7 onsets on distinct, non-overlapping steps, 1–2 steps each, at most 14 sounding, each pitch in the scale and range and at most 2 scale steps from the one before |
+| M-4 | In every phrase with melody, more than half of the 128 steps are rests (a step sounds while a note covers it); notes on beats 1 and 3 are chord tones. For every chord of every template (and its sus4 forms) in all 24 keys, a melody pitch is allowed on beats 1 and 3 |
+| F-1 | The sequence of layer sets, one per phrase, equals the list in F-1 (phrases 1–10, then 3–10 repeated), and the layer set never changes inside a phrase |
+| F-2 | Never more than 4 consecutive phrases with drums; drums appear at least once |
+| F-3 | For all 24 keys and the keys in force right after each key change of seeds 1–5, 10 chime calls each (draws from seed 8): every call returns exactly one note, whose MIDI number is the key's tonic in octave 5 plus 7 or plus 14, and both occur; its nominal time is the time asked, and its start within 8 ms of it. With u fixed to 0, 0.5, 0.999 (and with three given draws), the chime takes the choice from the first draw and the RH-4 offset and factor from the next two |
+| R-10 | Every bar from 1 to the end is produced with no gap (each bar starts where the last one ends, C-4), and with seeds 1–5 no 16-bar window of notes (all layers together; layer, pitch or drum, bar offset, step) appears twice in 30 minutes. This is a check on these seeds, not a guarantee: the windows differ because their parts are drawn |
+
+### Timbre and master chain (unit tests on patch and chain data)
+| Rule | Check |
+|---|---|
+| T-1 | The electric piano patch has two FM pairs at ratios 1:1 and 14:1; the 14:1 modulation envelope is ≤ 10% at 0.3 s |
+| T-2 | The bass patch is a sine plus the 2nd harmonic with gain in [0.1, 0.3] |
+| T-3 | The pad patch has two sawtooths detuned within ±3 to ±10 cents, a low-pass ≤ 2 kHz, attack ≥ 0.5 s |
+| T-4 | Kick pitch ≥ 100 Hz at 0 ms and ≤ 60 Hz at 100 ms; snare band-pass center in 1–3 kHz; hat high-pass ≥ 5 kHz and gain ≥ 12 dB below the snare |
+| T-5 | The chime's ratio is at least 0.05 away from every integer |
+| MC-1 | The chain description lists the stages in the stated order, vinyl noise after the reverb; a browser test checks the built node graph has the same order |
+| MC-2–MC-6 | Each stage's parameters are within the stated ranges; the reverb impulse response, measured, falls by 60 dB in 2.5 s ± 0.2 |
+
+### Sound output (browser tests through OfflineAudioContext, UC-05)
+| Rule | Check |
+|---|---|
+| L-1 | Every patch E05 produces (all instruments, the chime) has attack ≥ 5 ms and release ≥ 30 ms (unit test) |
+| L-2–L-4 | **Forced render:** a test style with every layer on from bar 1, a flare forced at 10 s and 40 s (chime), and vinyl clicks forced every 5 s, rendered for 60 s. Every source the master chain can play sounds in it. Every limit in L-2–L-4 is checked |
+| L-2–L-4 | **Natural render:** the default style for 6 minutes with 2 seeds, long enough to pass through every phrase of F-1 (at 72 BPM, the slowest tempo, the 10 phrases take 80 bars, about 267 s). Every limit is checked |
+
+### Browser boundary (browser tests)
+| Requirement | Check |
+|---|---|
+| R-08 | Draws are counted by wrapping the canvas's stroke (A01 strokes the grid once per draw), with no hook in the app. With prefers-reduced-motion emulated, A01 draws exactly once in 3 s. With the canvas moved out of view (it was drawing just before), A01 draws nothing for 2 s, and drawing resumes within 1.5 s when it comes back |
+| MG-1 (browser) | Live: over about 3 s timed inside the page (start and end both taken there), at least 6 draws and at most floor(12 × seconds) + 1; the canvas picture differs afterwards |
+| R-11 | Before the button is pressed, no AudioContext has been created. Within 1 s after pressing it, the AudioContext is running and at least one note is scheduled. The page has exactly one interactive element, the "♪" button |
+
+### Visual and listening
+| Requirement | Check |
+|---|---|
+| R-01, R-02, R-06, R-07 | Screenshots at 1440 px and 390 px, compared side by side with the reference |
+| R-10 (feel) | Does it sound chill? The user listens and decides |
+
+Each automated check is first shown to catch one deliberately broken input before its result is trusted.
+
+## Build order
+1. U01–U03, E01, E02, A01, `index.html`: a still galaxy → check by screenshots; add the build to CI (#2)
+2. a. The frame loop (MG-1–MG-3), rotation and twinkle, reduced motion and off screen (R-08) with browser tests in CI; b. colour glints, E03 flares
+3. E04 as pure functions with unit tests
+4. E05, A02, the "♪" button, the chime
+5. Publish to GitHub Pages; add `check:workflows` (R-21) with the Pages workflow
